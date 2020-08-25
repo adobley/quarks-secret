@@ -21,6 +21,7 @@ type SecretType = string
 const (
 	Password         SecretType = "password"
 	Certificate      SecretType = "certificate"
+	TLS				 SecretType = "tls"
 	SSHKey           SecretType = "ssh"
 	RSAKey           SecretType = "rsa"
 	BasicAuth        SecretType = "basic-auth"
@@ -142,6 +143,7 @@ type QuarksSecretStatus struct {
 	LastReconcile *metav1.Time `json:"lastReconcile"`
 	// Indicates if the secret has already been generated
 	Generated *bool `json:"generated"`
+	// race condition here???
 }
 
 // +genclient

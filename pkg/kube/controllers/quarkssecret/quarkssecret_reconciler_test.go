@@ -3,6 +3,7 @@ package quarkssecret_test
 import (
 	"context"
 	"fmt"
+	"github.com/dchest/uniuri"
 	"time"
 
 	. "github.com/onsi/ginkgo"
@@ -401,6 +402,137 @@ var _ = Describe("ReconcileQuarksSecret", func() {
 					Expect(err).ToNot(HaveOccurred())
 					Expect(reconcile.Result{}).To(Equal(result))
 				})
+			})
+		})
+	})
+
+	FContext("when generating tls", func() {
+		BeforeEach(func() {
+			qSecret.Spec.Type = "tls"
+			qSecret.Spec.Request.CertificateRequest.CARef = qsv1a1.SecretReference{Name: "root_ca", Key: "ca"}
+			qSecret.Spec.Request.CertificateRequest.CAKeyRef = qsv1a1.SecretReference{Name: "root_ca", Key: "key"}
+			qSecret.Spec.Request.CertificateRequest.CommonName = "foo.com"
+			qSecret.Spec.Request.CertificateRequest.AlternativeNames = []string{"bar.com", "baz.com"}
+			qSecret.Spec.Request.CertificateRequest.SignerType = "local"
+		})
+
+		Context("if the CA is not ready", func() {
+			It("requeues generation", func() {
+				result, err := reconciler.Reconcile(request)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(client.CreateCallCount()).To(Equal(0))
+				Expect(result.RequeueAfter).To(Equal(time.Second * 5))
+			})
+		})
+
+		Context("if the CA is ready", func() {
+
+			var (
+				generatedCert string
+				generatedPrivateKey string
+			)
+
+			BeforeEach(func() {
+				ca := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "root_ca",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"ca":  []byte("the_ca"),
+						"key": []byte("ca_private_key"),
+					},
+				}
+
+				generatedCert = "the_cert-" + uniuri.NewLen(5)
+				generatedPrivateKey = "private_key-" + uniuri.NewLen(5)
+
+				//clientCallNumber := 0
+
+				// insertThisInMockK8sDB([{objectName, objectData}, {objectName2, objectData2}])
+
+				client.GetCalls(func(context context.Context, nn types.NamespacedName, object runtime.Object) error {
+
+					//switch clientCallNumber {
+					//case 0:
+					//	// sadfsdf
+					//case 1:
+					//	// sdsdf
+					//
+					//}
+
+					switch object := object.(type) {
+					case *qsv1a1.QuarksSecret:
+						// Expect(nn.Name).To(Equal("foo"), "only fake returned QuarksSecret is called foo")
+						if nn.Name == "foo" {
+							qSecret.DeepCopyInto(object)
+						}
+
+					case *corev1.Secret:
+						//if clientCallNumber == 0 {
+						//	Expect(nn.Name).To(Equal("root_ca"), "only fake returned Secret is called root_ca")
+						//}
+
+						if nn.Name == "root_ca" {
+							ca.DeepCopyInto(object)
+						}
+
+						if nn.Name == "generated-secret" {
+							return errors.NewNotFound(schema.GroupResource{}, "not found")
+					    }
+
+						// clientCallNumber++
+					}
+					return nil
+				})
+			})
+
+			Context("and the generated secret is a TLS type", func() {
+				It("triggers generation of a secret", func() {
+					generator.GenerateCertificateCalls(func(name string, request credsgen.CertificateGenerationRequest) (credsgen.Certificate, error) {
+						Expect(request.CA.Certificate).To(Equal([]byte("the_ca")))
+						Expect(request.CA.PrivateKey).To(Equal([]byte("ca_private_key")))
+
+						return credsgen.Certificate{Certificate: []byte(generatedCert), PrivateKey: []byte(generatedPrivateKey), IsCA: false}, nil
+					})
+					client.CreateCalls(func(context context.Context, object runtime.Object, _ ...crc.CreateOption) error {
+						secret := object.(*corev1.Secret)
+						Expect(secret.StringData["tls.crt"]).To(Equal(generatedCert))
+						Expect(secret.StringData["tls.key"]).To(Equal(generatedPrivateKey))
+						Expect(secret.GetLabels()).To(HaveKeyWithValue(qsv1a1.LabelKind, qsv1a1.GeneratedSecretKind))
+						Expect(secret.GetLabels()).To(HaveKeyWithValue("Label", "generated-label"))
+						Expect(string(secret.Type)).To(Equal("kubernetes.io/tls"))
+						return nil
+					})
+
+					result, err := reconciler.Reconcile(request)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(client.CreateCallCount()).To(Equal(1))
+					Expect(result).To(Equal(reconcile.Result{}))
+				})
+
+				//It("considers generation parameters", func() {
+				//	generator.GenerateCertificateCalls(func(name string, request credsgen.CertificateGenerationRequest) (credsgen.Certificate, error) {
+				//		Expect(request.IsCA).To(BeFalse())
+				//		Expect(request.CommonName).To(Equal("foo.com"))
+				//		Expect(request.AlternativeNames).To(Equal([]string{"bar.com", "baz.com"}))
+				//		return credsgen.Certificate{Certificate: []byte("the_cert"), PrivateKey: []byte("private_key"), IsCA: false}, nil
+				//	})
+				//	client.CreateCalls(func(context context.Context, object runtime.Object, _ ...crc.CreateOption) error {
+				//		secret := object.(*corev1.Secret)
+				//		Expect(secret.StringData["certificate"]).To(Equal("the_cert"))
+				//		Expect(secret.StringData["private_key"]).To(Equal("private_key"))
+				//		Expect(secret.StringData["ca"]).To(Equal("theca"))
+				//		Expect(secret.GetLabels()).To(HaveKeyWithValue(qsv1a1.LabelKind, qsv1a1.GeneratedSecretKind))
+				//		Expect(secret.GetLabels()).To(HaveKeyWithValue("Label", "generated-label"))
+				//		return nil
+				//	})
+				//
+				//	result, err := reconciler.Reconcile(request)
+				//	Expect(err).ToNot(HaveOccurred())
+				//	Expect(client.CreateCallCount()).To(Equal(1))
+				//	Expect(reconcile.Result{}).To(Equal(result))
+				//})
 			})
 		})
 	})
